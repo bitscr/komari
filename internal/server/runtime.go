@@ -21,6 +21,7 @@ import (
 	"github.com/komari-monitor/komari/internal/metricstore"
 	"github.com/komari-monitor/komari/internal/plugin"
 	"github.com/komari-monitor/komari/internal/scheduler"
+	"github.com/komari-monitor/komari/utils/cloudflared"
 	"github.com/komari-monitor/komari/utils/geoip"
 	logger "github.com/komari-monitor/komari/utils/log"
 	"github.com/komari-monitor/komari/utils/messageSender"
@@ -49,6 +50,15 @@ func (a *App) StartBackground() error {
 	registerScheduledWork()
 	a.addCleanup("scheduler", func(context.Context) error {
 		scheduler.StopAll()
+		return nil
+	})
+	// Built-in cloudflared tunnel: auto-start when a token is supplied via
+	// KOMARI_CLOUDFLARED_TOKEN (or a stored token), torn down on shutdown.
+	if err := cloudflared.AutoStart(os.Getenv("KOMARI_CLOUDFLARED_TOKEN")); err != nil {
+		logger.Errorf("server", "failed to auto start cloudflared: %v", err)
+	}
+	a.addCleanup("cloudflared", func(context.Context) error {
+		cloudflared.Shutdown()
 		return nil
 	})
 	return nil

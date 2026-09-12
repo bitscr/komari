@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/komari-monitor/komari/database/accounts"
 	"github.com/komari-monitor/komari/database/auditlog"
 	"github.com/komari-monitor/komari/database/dbcore"
 	"github.com/komari-monitor/komari/database/models"
@@ -18,6 +19,7 @@ import (
 	"github.com/komari-monitor/komari/pkg/rpc"
 	v2 "github.com/komari-monitor/komari/protocol/v2"
 	"github.com/komari-monitor/komari/utils"
+	"github.com/komari-monitor/komari/utils/cloudflared"
 	"github.com/komari-monitor/komari/utils/geoip"
 	"github.com/komari-monitor/komari/utils/messageSender"
 	agent_runtime "github.com/komari-monitor/komari/web/agent"
@@ -25,7 +27,9 @@ import (
 )
 
 // admin.system.go
-// 系统/运维类 RPC2 方法（admin 命名空间）：日志、远程执行、测试。
+// 系统/运维类 RPC2 方法（admin 命名空间）：日志、cloudflared、远程执行、测试。
+
+const cloudflaredStopConfirmText = "STOP CLOUDFLARED"
 
 func init() {
 	RegisterWithGroupAndMeta("getLogs", rpc.RoleAdmin, adminGetLogs, &rpc.MethodMeta{
@@ -38,8 +42,25 @@ func init() {
 		},
 		Returns: "{ logs: Log[], total: number }",
 	})
+	RegisterWithGroupAndMeta("getCloudflaredStatus", rpc.RoleAdmin, adminCloudflaredStatus, &rpc.MethodMeta{
+		Name:    "admin:getCloudflaredStatus",
+		Summary: "Get cloudflared tunnel status",
+	})
+	RegisterWithGroupAndMeta("startCloudflared", rpc.RoleAdmin, adminStartCloudflared, &rpc.MethodMeta{
+		Name:    "admin:startCloudflared",
+		Summary: "Start cloudflared tunnel",
+		Params:  []rpc.ParamMeta{{Name: "token", Type: "string", Description: "Cloudflare Tunnel token"}},
+	})
+	RegisterWithGroupAndMeta("stopCloudflared", rpc.RoleAdmin, adminStopCloudflared, &rpc.MethodMeta{
+		Name:    "admin:stopCloudflared",
+		Summary: "Stop cloudflared tunnel",
+		Params:  []rpc.ParamMeta{{Name: "current_password", Type: "string", Description: "Current password"}, {Name: "confirm_text", Type: "string", Description: "Type STOP CLOUDFLARED to confirm"}},
+	})
+	RegisterWithGroupAndMeta("removeCloudflaredToken", rpc.RoleAdmin, adminRemoveCloudflaredToken, &rpc.MethodMeta{
+		Name:    "admin:removeCloudflaredToken",
+		Summary: "Remove cloudflared token",
+	})
 	reg("exec", adminExec, "Execute a command on clients")
-
 	reg("testSendMessage", adminTestSendMessage, "Send a test notification")
 	reg("testGeoip", adminTestGeoip, "Test GeoIP lookup")
 	// 远程命令执行属敏感操作：除 admin 角色外，还需通过敏感操作二次验证。
@@ -97,12 +118,78 @@ func filterAdminLogsByMessageType(query *gorm.DB, msgType string) *gorm.DB {
 	return query
 }
 
+func adminCloudflaredStatus(_ context.Context, _ *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+	return cloudflared.Status(), nil
+}
+
+func adminStartCloudflared(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+	var params struct {
+		Token string `json:"token"`
+	}
+	req.BindParams(&params)
+	token := strings.TrimSpace(params.Token)
+	if token != "" {
+		if err := cloudflared.SaveToken(token); err != nil {
+			return nil, rpc.MakeError(rpc.InternalError, "Failed to save Cloudflare Tunnel token: "+err.Error(), nil)
+		}
+	}
+	if err := cloudflared.Start(token); err != nil {
+		return nil, rpc.MakeError(rpc.InvalidParams, err.Error(), nil)
+	}
+	actor, ip := auditActor(ctx)
+	auditlog.Log(ip, actor, "started cloudflared tunnel", "warn")
+	return cloudflared.Status(), nil
+}
+
+func adminStopCloudflared(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+	var params struct {
+		CurrentPassword string `json:"current_password"`
+		ConfirmText     string `json:"confirm_text"`
+	}
+	req.BindParams(&params)
+
+	disablePasswordLogin, _ := config.GetAs[bool](config.DisablePasswordLoginKey, false)
+	if !disablePasswordLogin {
+		actor, _ := auditActor(ctx)
+		if actor == "" {
+			return nil, rpc.MakeError(rpc.Unauthenticated, "Unauthorized.", nil)
+		}
+		user, err := accounts.GetUserByUUID(actor)
+		if err != nil {
+			return nil, rpc.MakeError(rpc.Unauthenticated, "Failed to verify current user", nil)
+		}
+		if strings.TrimSpace(params.CurrentPassword) == "" {
+			return nil, rpc.MakeError(rpc.InvalidParams, "Current password is required", nil)
+		}
+		if _, ok := accounts.CheckPassword(user.Username, params.CurrentPassword); !ok {
+			return nil, rpc.MakeError(rpc.Unauthenticated, "Current password is incorrect", nil)
+		}
+	} else if strings.TrimSpace(params.ConfirmText) != cloudflaredStopConfirmText {
+		return nil, rpc.MakeError(rpc.InvalidParams, "Type STOP CLOUDFLARED to confirm stopping cloudflared", nil)
+	}
+
+	if err := cloudflared.Stop(); err != nil {
+		return nil, rpc.MakeError(rpc.InternalError, "Failed to stop cloudflared: "+err.Error(), nil)
+	}
+	actor, ip := auditActor(ctx)
+	auditlog.Log(ip, actor, "stopped cloudflared tunnel", "warn")
+	return cloudflared.Status(), nil
+}
+
+func adminRemoveCloudflaredToken(ctx context.Context, _ *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+	if err := cloudflared.RemoveToken(); err != nil {
+		return nil, rpc.MakeError(rpc.InvalidParams, "Failed to remove Cloudflare Tunnel token: "+err.Error(), nil)
+	}
+	actor, ip := auditActor(ctx)
+	auditlog.Log(ip, actor, "removed cloudflared tunnel token", "warn")
+	return cloudflared.Status(), nil
+}
+
 func adminExec(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
 	var params struct {
 		Command string   `json:"command"`
 		Clients []string `json:"clients"`
 	}
-
 	req.BindParams(&params)
 	if strings.TrimSpace(params.Command) == "" {
 		return nil, rpc.MakeError(rpc.InvalidParams, "Command cannot be empty", nil)
