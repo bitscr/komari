@@ -43,6 +43,15 @@ runs:
           git clone --depth=1 "${{ inputs.repository }}" komari-web
         fi
         cd komari-web
+        # Ensure generated install commands use the customized Agent fork.
+        grep -RIl --include='*.ts' --include='*.tsx' --include='*.json' \
+          'komari-monitor/komari-agent' src \
+          | xargs -r sed -i 's#komari-monitor/komari-agent#bitscr/komari-agent#g'
+        if grep -RIn --include='*.ts' --include='*.tsx' --include='*.json' \
+          'komari-monitor/komari-agent' src; then
+          echo "Upstream komari-agent references remain in the frontend source."
+          exit 1
+        fi
         npm install
         npm run build
         cd ..
