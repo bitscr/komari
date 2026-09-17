@@ -56,8 +56,8 @@ BACKUP_DIR="$INSTALL_DIR/backup"
 DATA_BACKUP_DIR="$DATA_DIR/data/backup"
 DEFAULT_PORT="25774"
 LISTEN_PORT=""
-STANDARD_REPO="komari-monitor/komari"
-LITE_REPO="nuomiiiii/komari"
+STANDARD_REPO="bitscr/komari"
+LITE_REPO="bitscr/komari"
 REPO="$STANDARD_REPO"
 # 发行版本: standard（标准版）或 lite（Lite 轻量版）
 EDITION="standard"
@@ -927,11 +927,33 @@ install_dependencies() {
 }
 
 # Get download URL based on channel
+#
+# This repo (bitscr/komari) publishes Snapshot-* prereleases only, so a plain
+# /releases/latest/download/ URL has no stable release to resolve and 404s.
+# Keep both channels usable: prefer the requested channel and fall back to the
+# other when the requested one has nothing published yet.
+get_latest_stable_tag() {
+    curl -s "https://api.github.com/repos/${REPO}/releases" \
+        | grep '"tag_name"' \
+        | grep -v 'Snapshot-' \
+        | grep -v '"tag_name": *"v0\.0\.0"' \
+        | head -1 \
+        | sed -e 's/.*"tag_name": *"//' -e 's/".*//'
+}
+
+get_latest_snapshot_tag() {
+    curl -s "https://api.github.com/repos/${REPO}/releases" \
+        | grep '"tag_name"' \
+        | grep 'Snapshot-' \
+        | head -1 \
+        | sed -e 's/.*"tag_name": *"//' -e 's/".*//'
+}
+
 get_download_url() {
     local arch=$1
     local file_name="komari-linux-${arch}"
 
-    # Lite 仓库没有 snapshot 发布，始终使用正式版下载地址。
+    # Lite uses the same assets as standard in this repo.
     if [ "$EDITION" = "lite" ]; then
         CHANNEL="stable"
     fi
@@ -939,19 +961,46 @@ get_download_url() {
     if [ "$CHANNEL" = "snapshot" ]; then
         # 获取最新的 snapshot 预发布版本
         log_info "$(msg fetch_snapshot)" >&2
-        local latest_snapshot=$(curl -s "https://api.github.com/repos/${REPO}/releases" | grep '"tag_name"' | grep 'Snapshot-' | head -1 | sed -e 's/.*"tag_name": *"//' -e 's/".*//')
+        local latest_snapshot
+        latest_snapshot=$(get_latest_snapshot_tag)
 
-        if [ -z "$latest_snapshot" ]; then
-            log_error "$(msg snapshot_not_found)" >&2
-            return 1
+        if [ -n "$latest_snapshot" ]; then
+            log_info "$(msg snapshot_found "$latest_snapshot")" >&2
+            echo "https://github.com/${REPO}/releases/download/${latest_snapshot}/${file_name}"
+            return 0
         fi
 
+        # No snapshot published: fall back to a stable release if one exists.
+        local latest_stable
+        latest_stable=$(get_latest_stable_tag)
+        if [ -n "$latest_stable" ]; then
+            log_info "$(msg snapshot_found "$latest_stable")" >&2
+            echo "https://github.com/${REPO}/releases/download/${latest_stable}/${file_name}"
+            return 0
+        fi
+
+        log_error "$(msg snapshot_not_found)" >&2
+        return 1
+    fi
+
+    # 稳定版：优先用 latest，若仓库尚无正式版则回退到最新 snapshot。
+    local latest_stable
+    latest_stable=$(get_latest_stable_tag)
+    if [ -n "$latest_stable" ]; then
+        echo "https://github.com/${REPO}/releases/download/${latest_stable}/${file_name}"
+        return 0
+    fi
+
+    local latest_snapshot
+    latest_snapshot=$(get_latest_snapshot_tag)
+    if [ -n "$latest_snapshot" ]; then
         log_info "$(msg snapshot_found "$latest_snapshot")" >&2
         echo "https://github.com/${REPO}/releases/download/${latest_snapshot}/${file_name}"
-    else
-        # 稳定版：使用 latest
-        echo "https://github.com/${REPO}/releases/latest/download/${file_name}"
+        return 0
     fi
+
+    log_error "$(msg snapshot_not_found)" >&2
+    return 1
 }
 
 # Format bytes with a compact, human-readable unit.

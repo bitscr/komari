@@ -1,5 +1,19 @@
 # Komari
 
+> ## 📌 关于本仓库
+>
+> 这是 **bitscr 维护的修改版（fork）**，不是上游原项目。本仓库的 `main` 分支以**本仓库的修改为准**：Docker 镜像、Release 二进制与安装脚本都只从 `github.com/bitscr/komari` 产出。
+>
+> - **部署一律使用本仓库**：
+>   ```bash
+>   docker pull ghcr.io/bitscr/komari:latest
+>   ```
+>   或从 [本仓库 Releases](https://github.com/bitscr/komari/releases) 下载二进制；也可用本仓库的 `install-komari.sh`。
+> - 本仓库只配置了 `origin` 一个远端（指向 `bitscr/komari`），不存在指向其他仓库的远端，因此 `git push` 与 GitHub Actions 构建都不会触及原项目。
+> - 本仓库相对上游的改动（含恢复内置 Cloudflare 隧道支持、修改后的 agent 引用等）记录在 [commit 历史](https://github.com/bitscr/komari/commits/main) 中。
+> - 上游原项目的代码与文档若与本仓库冲突，**以本仓库为准**。
+> - 本仓库目前只发布 `Snapshot-*` 预发布版；安装脚本已兼容两种通道（任一通道缺失时自动回退到另一个）。
+
 ![Badge](https://hitscounter.dev/api/hit?url=https%3A%2F%2Fgithub.com%2Fkomari-monitor%2Fkomari&label=&icon=github&color=%23a370f7&message=&style=flat&tz=UTC)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/komari-monitor/komari)
 
